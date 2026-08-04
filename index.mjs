@@ -18,17 +18,20 @@ const headers = {
   "Access-Control-Allow-Methods": "GET,OPTIONS",
 };
 
+if (
+  !process.env.FIREBASE_PROJECT_ID ||
+  !process.env.FIREBASE_CLIENT_EMAIL ||
+  !process.env.FIREBASE_PRIVATE_KEY
+) {
+  throw new Error("Missing Firebase environment variables");
+}
+
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID || "login-69a8a",
-      clientEmail:
-        process.env.FIREBASE_CLIENT_EMAIL ||
-        "firebase-adminsdk-fbsvc@login-69a8a.iam.gserviceaccount.com",
-      privateKey: (
-        process.env.FIREBASE_PRIVATE_KEY ||
-        "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-      ).replace(/\\n/g, "\n"),
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
     }),
   });
 }
@@ -55,8 +58,6 @@ async function getImageUrl(imageKey) {
 }
 
 export const handler = async (event) => {
-  console.log("Incoming event:", JSON.stringify(event));
-
   if (
     event?.requestContext?.http?.method === "OPTIONS" ||
     event?.httpMethod === "OPTIONS"
@@ -83,14 +84,18 @@ export const handler = async (event) => {
       ? JSON.parse(decodeURIComponent(qs.startKey))
       : undefined;
 
+    // Consulta por el GSI de dueño: el aislamiento lo impone la clave
+    // (owner_uid), no un filtro posterior, y la paginación (Limit) opera dentro
+    // de los datos del propio usuario en vez de sobre la tabla completa.
     const params = {
       TableName: TABLE_NAME,
-      KeyConditionExpression: "#pk = :pk",
-      FilterExpression: "owner_uid = :ownerUid",
-      ExpressionAttributeNames: { "#pk": "type" },
+      IndexName: "owner-index",
+      KeyConditionExpression: "#owner = :owner",
+      FilterExpression: "#type = :type",
+      ExpressionAttributeNames: { "#owner": "owner_uid", "#type": "type" },
       ExpressionAttributeValues: {
-        ":pk": "event",
-        ":ownerUid": ownerUid,
+        ":owner": ownerUid,
+        ":type": "event",
       },
       ScanIndexForward: false,
       Limit: limit,
@@ -128,10 +133,8 @@ export const handler = async (event) => {
       }),
     };
   } catch (err) {
-    console.error("Error:", err);
-    const isAuthError =
-      err?.code?.startsWith?.("auth/") ||
-      err?.message?.toLowerCase?.().includes("token");
+    console.error("Error:", err?.message ?? err);
+    const isAuthError = err?.code?.startsWith?.("auth/") === true;
     return {
       statusCode: isAuthError ? 401 : 500,
       headers,
