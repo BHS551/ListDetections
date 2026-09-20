@@ -11,6 +11,8 @@ const s3 = new S3Client({ region: "us-east-1" });
 
 const TABLE_NAME = "detections";
 const S3_BUCKET_NAME = "detection-frames-tests";
+const MAX_LIMIT = 200;
+const DEFAULT_LIMIT = 50;
 
 const headers = {
   "Content-Type": "application/json",
@@ -85,6 +87,15 @@ function getBearerToken(event) {
   return authHeader.slice("Bearer ".length).trim();
 }
 
+// Acota `limit` a un rango razonable: sin tope, un cliente podía pedir un
+// Query arbitrariamente grande (costo/latencia); NaN o valores negativos
+// caían silenciosamente en un Query mal formado.
+function parseLimit(raw) {
+  const n = Number(raw);
+  if (!raw || !Number.isFinite(n) || n <= 0) return DEFAULT_LIMIT;
+  return Math.min(Math.floor(n), MAX_LIMIT);
+}
+
 async function getImageUrl(imageKey) {
   if (!imageKey) return null;
   try {
@@ -123,10 +134,19 @@ export const handler = async (event) => {
     const ownerUid = decodedToken.uid;
 
     const qs = event?.queryStringParameters ?? {};
-    const limit = qs.limit ? Number(qs.limit) : 50;
-    const exclusiveStartKey = qs.startKey
-      ? JSON.parse(decodeURIComponent(qs.startKey))
-      : undefined;
+    const limit = parseLimit(qs.limit);
+    let exclusiveStartKey;
+    if (qs.startKey) {
+      try {
+        exclusiveStartKey = JSON.parse(decodeURIComponent(qs.startKey));
+      } catch (e) {
+        return {
+          statusCode: 400,
+          headers,
+          body: JSON.stringify({ message: "Invalid startKey" }),
+        };
+      }
+    }
 
     // Consulta por el GSI de dueño: el aislamiento lo impone la clave
     // (owner_uid), no un filtro posterior, y la paginación (Limit) opera dentro
